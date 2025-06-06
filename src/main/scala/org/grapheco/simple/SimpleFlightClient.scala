@@ -2,7 +2,7 @@ package org.grapheco.simple
 
 import org.apache.arrow.flight._
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{IntVector, VarCharVector}
+import org.apache.arrow.vector.{IntVector, VarBinaryVector, VarCharVector}
 
 import scala.collection.JavaConverters.iterableAsScalaIterableConverter
 
@@ -35,15 +35,18 @@ object SimpleFlightClient {
 
         val idVector = root.getVector("id")
         val nameVector = root.getVector("name")
+        val fileVector = root.getVector("file")
 
         for (i <- 0 until rowCount) {
           val id = idVector.asInstanceOf[IntVector].get(i)
           val nameBytes = nameVector.asInstanceOf[VarCharVector].get(i)
+          val fileBytes: Array[Byte] = fileVector.asInstanceOf[VarBinaryVector].get(i)
           val name = new String(nameBytes, "UTF-8")
 //          println(s"Row $i: id=$id, name=$name")
 
           // 累计字节数（假设每个 id 占 4 字节，name 的字节数由其长度决定）
           totalBytes += 4 + nameBytes.length
+          totalBytes += fileBytes.length
         }
       }
       stream.close()

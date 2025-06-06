@@ -18,7 +18,8 @@ object SimpleFlightServer {
     // 构造表结构：int32, utf8 两列
     val fields = List(
       new Field("id", FieldType.nullable(new Int(32, true)), null),
-      new Field("name", FieldType.nullable(new ArrowType.Utf8()), null)
+      new Field("name", FieldType.nullable(new ArrowType.Utf8()), null),
+      new Field("file", FieldType.nullable(new ArrowType.Binary()), null)
     )
     val schema = new Schema(fields.asJava)
 
@@ -29,14 +30,16 @@ object SimpleFlightServer {
         try {
           val idVector = root.getVector("id").asInstanceOf[IntVector]
           val nameVector = root.getVector("name").asInstanceOf[VarCharVector]
+          val fieldVector = root.getVector("file").asInstanceOf[VarBinaryVector]
 
           root.allocateNew()
 
-          val rows = 50000000 // 这里模拟50000000行数据
+          val rows = 10 // 这里模拟50000000行数据
           for (i <- 0 until rows) {
             idVector.setSafe(i, i)
             val name = s"name_$i"
             nameVector.setSafe(i, name.getBytes("UTF-8"))
+            fieldVector.setSafe(i,getFileByteArray("/Users/renhao/Downloads/数据导入核能修改.mov") )
           }
           root.setRowCount(rows)
 
@@ -71,6 +74,24 @@ object SimpleFlightServer {
 
       override def listActions(context: FlightProducer.CallContext, listener: FlightProducer.StreamListener[ActionType]): Unit = {
         listener.onError(CallStatus.UNIMPLEMENTED.toRuntimeException())
+      }
+      import java.io.{File, FileInputStream, IOException}
+
+      private def getFileByteArray(filePath: String): Array[Byte] = {
+        val file = new File(filePath)
+        if (!file.exists() || !file.isFile) {
+          throw new IOException(s"File not found or invalid: $filePath")
+        }
+
+        val inputStream = new FileInputStream(file)
+        try {
+          // 获取文件的字节数组
+          val fileBytes = new Array[Byte](file.length().toInt)
+          inputStream.read(fileBytes)
+          fileBytes
+        } finally {
+          inputStream.close()
+        }
       }
     }
 
