@@ -34,7 +34,7 @@ object SimpleFlightServer {
 
           root.allocateNew()
 
-          val rows = 10 // 这里模拟50000000行数据
+          val rows = 10 // 这里模拟10行数据
           for (i <- 0 until rows) {
             idVector.setSafe(i, i)
             val name = s"name_$i"
