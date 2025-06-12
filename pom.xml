@@ -12,6 +12,9 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <scala.version>2.12.18</scala.version>
+    <scala.maven.plugin.version>4.9.1</scala.maven.plugin.version>
+    <scala.binary.version>2.12</scala.binary.version>
   </properties>
 
   <dependencies>
@@ -57,6 +60,12 @@
     </dependency>
 
     <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-reflect</artifactId>
+      <version>${scala.version}</version>
+    </dependency>
+
+    <dependency>
       <groupId>commons-net</groupId>
       <artifactId>commons-net</artifactId>
       <version>3.11.1</version>
@@ -70,16 +79,38 @@
 
     <dependency>
       <groupId>org.apache.spark</groupId>
-      <artifactId>spark-core_2.12</artifactId>
+      <artifactId>spark-core_${scala.binary.version}</artifactId>
       <version>3.5.6</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.scala-lang</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <dependency>
       <groupId>org.apache.spark</groupId>
-      <artifactId>spark-sql_2.12</artifactId>
+      <artifactId>spark-sql_${scala.binary.version}</artifactId>
       <version>3.5.6</version>
-    </dependency>
+      <exclusions>
+        <exclusion>
+          <groupId>org.scala-lang</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
 
+    </dependency>
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-library</artifactId>
+      <version>${scala.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.scala-lang.modules</groupId>
+      <artifactId>scala-java8-compat_${scala.binary.version}</artifactId>
+      <version>1.0.2</version>
+    </dependency>
 
 
     <dependency>
@@ -90,17 +121,79 @@
     </dependency>
   </dependencies>
   <build>
+    <sourceDirectory>src/main/scala</sourceDirectory>
     <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+        <version>${scala.maven.plugin.version}</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>compile</goal>
+              <goal>testCompile</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <scalaVersion>${scala.version}</scalaVersion>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <source>1.8</source>
+          <target>1.8</target>
+        </configuration>
+      </plugin>
+       <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.0.0-M6</version>
+          <configuration>
+            <argLine>--add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
+          </configuration>
+        </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.0.0-M6</version>
+        <version>3.2.3</version>
         <configuration>
-          <argLine>--add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
+          <argLine>
+            --add-opens=java.base/java.nio=ALL-UNNAMED
+          </argLine>
         </configuration>
       </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>3.2.3</version>
+        <configuration>
+          <argLine>
+            --add-opens=java.base/java.nio=ALL-UNNAMED
+          </argLine>
+        </configuration>
+      </plugin>
+<!--      <plugin>-->
+<!--        <groupId>org.apache.maven.plugins</groupId>-->
+<!--        <artifactId>maven-eclipse-plugin</artifactId>-->
+<!--        <configuration>-->
+<!--          <downloadSources>true</downloadSources>-->
+<!--          <buildcommands>-->
+<!--            <buildcommand>ch.epfl.lamp.sdt.core.scalabuilder</buildcommand>-->
+<!--          </buildcommands>-->
+<!--          <additionalProjectnatures>-->
+<!--            <projectnature>ch.epfl.lamp.sdt.core.scalanature</projectnature>-->
+<!--          </additionalProjectnatures>-->
+<!--          <classpathContainers>-->
+<!--            <classpathContainer>org.eclipse.jdt.launching.JRE_CONTAINER</classpathContainer>-->
+<!--            <classpathContainer>ch.epfl.lamp.sdt.launching.SCALA_CONTAINER</classpathContainer>-->
+<!--          </classpathContainers>-->
+<!--        </configuration>-->
+<!--      </plugin>-->
     </plugins>
-
     <extensions>
       <extension>
         <groupId>kr.motd.maven</groupId>

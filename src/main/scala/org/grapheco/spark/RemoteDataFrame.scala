@@ -55,12 +55,20 @@ object DacpClient{
     r
   }
 
+  private def printStr(ss: String): String = {
+    println("-------------------------------------调用外部函数")
+    val r = ss.split("[\\\\/]").last
+    println("----------------" + r)
+    r
+  }
+
+
   def connect (url: String, port: Int): RemoteExecutor = new RemoteExecutor(url, port)
 
   def main(args: Array[String]): Unit = {
-    val df: RemoteDataFrameImpl = connect("0.0.0.0", 33333).open("test")
+    val df: RemoteDataFrameImpl = connect("0.0.0.0", 33333).open("C:\\Users\\Yomi\\PycharmProjects\\ArrowFlightTest\\src\\main\\resources\\jpg")
     var num = 0
-    df.filter(row => splitStr(row.get(1).toString) == "Al").foreach(row => {
+    df.filter(row => printStr(row.get(0).toString) == "cdCSj.jpg").foreach(row => {
       println(row)
 //      num +=1
 //      if(num % 5000 ==0){
