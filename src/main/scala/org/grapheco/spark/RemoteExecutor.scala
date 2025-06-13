@@ -11,6 +11,7 @@ import org.apache.arrow.vector.{FieldVector, IntVector, VarBinaryVector, VarChar
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import scala.collection.JavaConverters.seqAsJavaListConverter
+import scala.jdk.CollectionConverters.asScalaBufferConverter
 
 /**
  * @Author renhao

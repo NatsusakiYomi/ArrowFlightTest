@@ -4,6 +4,8 @@ import org.apache.arrow.flight._
 import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
 import org.apache.arrow.vector.ipc.message.{ArrowFieldNode, ArrowRecordBatch}
 import org.apache.arrow.vector.{FieldVector, IntVector, VarBinaryVector, VarCharVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.types.FloatingPointPrecision
+import org.apache.arrow.vector.{BigIntVector, BitVector, Float4Vector, Float8Vector, IntVector, VarBinaryVector, VarCharVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.{SparkConf, SparkContext}
@@ -11,16 +13,22 @@ import org.apache.spark.input.PortableDataStream
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType, IntegerType, LongType, StringType, StructType}
 
 import java.io.{DataInputStream, File, FileInputStream}
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import java.util.Collections
 import java.nio.file.{Files, Paths}
 import java.util
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import scala.collection.JavaConverters.{asScalaBufferConverter, asScalaIteratorConverter, seqAsJavaListConverter}
 import scala.collection.immutable.List
+import scala.jdk.CollectionConverters.asScalaIteratorConverter
+import scala.reflect.internal.util.TableDef.Column
 import scala.util.{Try, Using}
 //import scala.jdk.CollectionConverters.{IteratorHasAsScala, _}
 //import scala.jdk.CollectionConverters.asScalaIteratorConverter
@@ -34,7 +42,10 @@ import scala.util.{Try, Using}
 class SparkServer(allocator: BufferAllocator, location: Location) extends NoOpFlightProducer {
 
   private val requestMap = new ConcurrentHashMap[FlightDescriptor, RemoteDataFrameImpl]()
-
+  private val spark = SparkSession.builder()
+    .appName("Spark Arrow Example")
+    .master("local[*]")
+    .getOrCreate()
   override def acceptPut(context: FlightProducer.CallContext, flightStream: FlightStream, ackStream: FlightProducer.StreamListener[PutResult]): Runnable = {
 
     new Runnable {
@@ -45,8 +56,8 @@ class SparkServer(allocator: BufferAllocator, location: Location) extends NoOpFl
           val source = root.getFieldVectors.get(0).asInstanceOf[VarCharVector].getObject(0).toString
           val dfOperations: List[DFOperation] = List.range(0, rowCount).map(index => {
             val bytes = root.getFieldVectors.get(1).asInstanceOf[VarBinaryVector].get(index)
-            if (bytes == null) null else
-              SimpleSerializer.deserialize(bytes).asInstanceOf[DFOperation]
+            if(bytes==null) null else
+            SimpleSerializer.deserialize(bytes).asInstanceOf[DFOperation]
           })
           val remoteDataFrameImpl = if (dfOperations.contains(null)) RemoteDataFrameImpl(source = source, List.empty)
           else RemoteDataFrameImpl(source = source, ops = dfOperations)
@@ -57,50 +68,6 @@ class SparkServer(allocator: BufferAllocator, location: Location) extends NoOpFl
       }
     }
   }
-
-  //  override def getStream(context: FlightProducer.CallContext, ticket: Ticket, listener: FlightProducer.ServerStreamListener): Unit = {
-  //    val flightDescriptor = FlightDescriptor.path(new String(ticket.getBytes, StandardCharsets.UTF_8))
-  //    val request: RemoteDataFrameImpl = requestMap.get(flightDescriptor)
-  //    val spark = SparkSession.builder()
-  //      .appName("Spark Arrow Example")
-  //      .master("local[*]")
-  //      .getOrCreate()
-  //    val data = Seq(
-  //      ("1", "Alice"),
-  //      ("2", "Bob"),
-  //      ("3", "Charlie")
-  //    )
-  //    // 依据requeste信息构建DataFrame
-  //    val df: DataFrame = spark.createDataFrame(data).toDF("id", "name")
-  //    var result: DataFrame =null
-  //    request.ops.foreach(opt => {
-  //      opt match {
-  //        case filter@FilterOp(f) => result = df.filter(row => {
-  //         val b = f(row)
-  //         b
-  //        })
-  //        case _ =>
-  //      }
-  //    })
-  //
-  //    //限制分区最大128mb 防止toLocalIterator拉取数据OOM
-  ////    val df = spark.read.option("maxSplitBytes", 134217728).csv("hdfs://10.0.82.139:8020/test/person_paper/part-00000").toDF("id","name")
-  //
-  //    val fields: Seq[Field] = List(
-  //      new Field("id", FieldType.nullable(new ArrowType.Utf8()), null),
-  //      new Field("name", FieldType.nullable(new ArrowType.Utf8()), null)
-  //    )
-  //    val schema = new Schema(fields.asJava)
-  //    val root = VectorSchemaRoot.create(schema, allocator)
-  //    val loader = new VectorLoader(root)
-  //    listener.start(root)
-  //    //每1000条row为一批进行传输,将DataFrame转化成Iterator，不会一次性加载到内存
-  //    result.toLocalIterator().asScala.grouped(1000).foreach(rows => {
-  //      loader.load(createDummyBatch(schema, rows))
-  //      listener.putNext()
-  //    })
-  //    listener.completed()
-  //  }
 
   override def getStream(context: FlightProducer.CallContext, ticket: Ticket, listener: FlightProducer.ServerStreamListener): Unit = {
     val flightDescriptor = FlightDescriptor.path(new String(ticket.getBytes, StandardCharsets.UTF_8))
@@ -118,7 +85,7 @@ class SparkServer(allocator: BufferAllocator, location: Location) extends NoOpFl
     val isImageSource = detectImageSource(dataPath)
     println(isImageSource)
     // 1. 从本地加载数据
-    val df = if (isImageSource) {
+    var df = if (isImageSource) {
       // 加载图片数据集
       spark.read.format("binaryFile")
         .load(dataPath)
@@ -142,12 +109,14 @@ class SparkServer(allocator: BufferAllocator, location: Location) extends NoOpFl
     var resultDF = df
     request.ops.foreach(opt => {
       opt match {
-        case filter@FilterOp(f) =>
-          resultDF = resultDF.filter(row => f(row))
-        case _ =>
+        case filter@FilterOp(f) => df = df.filter(f(_))
+        case m@MapOp(f) => df = spark.createDataFrame(df.rdd.map(f(_)), df.schema)
+        case s@SelectOp(cols)=> df = df.select(cols.map(col): _*)
+        case l@LimitOp(n) => df = df.limit(n)
+        case r@ReduceOp(f) => df.reduce((r1,r2) => f((r1,r2)))
+        case _ => throw new Exception(s"${opt.toString} the Transformation is not supported")
       }
     })
-    spark.close()
 
     //    println(df.show(0))
 
@@ -170,16 +139,31 @@ class SparkServer(allocator: BufferAllocator, location: Location) extends NoOpFl
       getBinaryStream(spark,dataPath,arrowSchema,listener)
     else{
       // 4. 分批发送数据
-      val root = VectorSchemaRoot.create(arrowSchema, allocator)
-      val loader = new VectorLoader(root)
-      listener.start(root)
-      resultDF.toLocalIterator().asScala.grouped(1000).foreach(rows => {
-        // 根据数据类型填充不同格式的数据
-        loader.load(createDummyBatch(arrowSchema, rows))
-        listener.putNext()
-      })
-
-      listener.completed()
+      val schema = sparkSchemaToArrowSchema(df.schema)
+      val childAllocator = allocator.newChildAllocator("flight-session", 0, Long.MaxValue)
+      val root = VectorSchemaRoot.create(schema, childAllocator)
+      try{
+        val loader = new VectorLoader(root)
+        listener.start(root)
+        //每1000条row为一批进行传输,将DataFrame转化成Iterator，不会一次性加载到内存
+        df.toLocalIterator().asScala.grouped(1000).foreach(rows => {
+          val batch = createDummyBatch(root, rows)
+          try{
+            loader.load(batch)
+            listener.putNext()
+          }finally {
+            batch.close()
+          }
+        })
+        listener.completed()
+      } catch {
+        case e: Throwable => listener.error(e)
+          throw e
+      }finally {
+        if (root != null) root.close()
+        if (childAllocator != null) childAllocator.close()
+        requestMap.remove(flightDescriptor)
+      }
     }
 
   }
@@ -508,6 +492,61 @@ val spark = SparkSession.builder()
     }
     listener.onCompleted()
   }
+
+  def close(): Unit = spark.close()
+
+  private def createDummyBatch(arrowRoot: VectorSchemaRoot, rows: Seq[org.apache.spark.sql.Row]): ArrowRecordBatch = {
+    arrowRoot.allocateNew()
+    val fieldVectors = arrowRoot.getFieldVectors.asScala
+    for (i <- rows.indices) {
+      val row = rows(i)
+      for (j <- row.schema.fields.indices) {
+        val value = row.get(j)
+        val vec = fieldVectors(j)
+        // 支持基本类型处理（可扩展）
+        value match {
+          case v: Int => vec.asInstanceOf[IntVector].setSafe(i, v)
+          case v: Long => vec.asInstanceOf[BigIntVector].setSafe(i, v)
+          case v: Double => vec.asInstanceOf[Float8Vector].setSafe(i, v)
+          case v: Float => vec.asInstanceOf[Float4Vector].setSafe(i, v)
+          case v: String =>
+            val bytes = v.getBytes("UTF-8")
+            vec.asInstanceOf[VarCharVector].setSafe(i, bytes, 0, bytes.length)
+          case v: Boolean => vec.asInstanceOf[BitVector].setSafe(i, if (v) 1 else 0)
+          case null => vec.setNull(i)
+          case _ => throw new UnsupportedOperationException("Type not supported")
+        }
+      }
+    }
+    arrowRoot.setRowCount(rows.length)
+    val unloader = new VectorUnloader(arrowRoot)
+    unloader.getRecordBatch
+  }
+
+  private def sparkSchemaToArrowSchema(sparkSchema: StructType): Schema = {
+    val fields: List[Field] = sparkSchema.fields.map { field =>
+      val arrowFieldType = field.dataType match {
+        case IntegerType =>
+          new FieldType(field.nullable, new ArrowType.Int(32, true), null)
+        case LongType =>
+          new FieldType(field.nullable, new ArrowType.Int(64, true), null)
+        case FloatType =>
+          new FieldType(field.nullable, new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE), null)
+        case DoubleType =>
+          new FieldType(field.nullable, new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE), null)
+        case StringType =>
+          new FieldType(field.nullable, ArrowType.Utf8.INSTANCE, null)
+        case BooleanType =>
+          new FieldType(field.nullable, ArrowType.Bool.INSTANCE, null)
+        case _ =>
+          throw new UnsupportedOperationException(s"Unsupported type: ${field.dataType}")
+      }
+
+      new Field(field.name, arrowFieldType, Collections.emptyList())
+    }.toList
+
+    new Schema(fields.asJava)
+  }
 }
 
 object FlightServerApp extends App {
@@ -521,6 +560,12 @@ object FlightServerApp extends App {
 
     flightServer.start()
     println(s"Server (Location): Listening on port ${flightServer.getPort}")
+    Runtime.getRuntime.addShutdownHook(new Thread() {
+      override def run(): Unit = {
+        flightServer.close()
+        producer.close()
+      }
+    })
     flightServer.awaitTermination()
   } catch {
     case e: Exception => e.printStackTrace()
