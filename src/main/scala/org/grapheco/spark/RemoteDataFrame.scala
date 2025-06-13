@@ -66,13 +66,18 @@ object DacpClient{
   def connect (url: String, port: Int): RemoteExecutor = new RemoteExecutor(url, port)
 
   def main(args: Array[String]): Unit = {
-    val df: RemoteDataFrameImpl = connect("0.0.0.0", 33333).open("C:\\Users\\Yomi\\PycharmProjects\\ArrowFlightTest\\src\\main\\resources\\jpg")
+    val df: RemoteDataFrameImpl = connect("0.0.0.0", 33333).open("C:\\Users\\Yomi\\PycharmProjects\\ArrowFlightTest\\src\\main\\resources\\cram")
     var num = 0
-    df.filter(row => printStr(row.get(0).toString) == "cdCSj.jpg").foreach(row => {
-      println(row)
-//      num +=1
+    var start=System.currentTimeMillis()
+    df.filter(row => printStr(row.get(0).toString) == "1.cram").foreach(row => {
+//      println(row)
+      var endTime=System.currentTimeMillis()
+      val elapsedSeconds=(endTime-start).toDouble/1000
+      val mbReceived = num*128
+      val bps =mbReceived/elapsedSeconds
+      num +=1
 //      if(num % 5000 ==0){
-//        println(s"传输数据共计：$num 条")
+        println(f"传输数据共计：$num 块，${num*128}MB，$bps%.2f MB/s")
 //      }
     })
   }
