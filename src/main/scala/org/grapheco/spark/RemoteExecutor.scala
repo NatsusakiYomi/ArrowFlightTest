@@ -10,6 +10,7 @@ import org.apache.arrow.vector.{FieldVector, IntVector, VarBinaryVector, VarChar
 
 import java.util.UUID
 import scala.collection.JavaConverters.seqAsJavaListConverter
+import scala.jdk.CollectionConverters.asScalaBufferConverter
 
 /**
  * @Author renhao
@@ -68,48 +69,29 @@ class FlightSparkClient(url: String, port:Int) {
     //flightInfo 中可以获取schema
     println(s"Client (Get Metadata): $flightInfo")
     val flightStream = flightClient.getStream(flightInfo.getEndpoints.get(0).getTicket)
-//    var batch = 0
-//    try{
-//      val vectorSchemaRootReceived = flightStream.getRoot
-//      while (flightStream.next()) {
-//        batch += 1
-//        println(s"Client Received data from spark batch #$batch, Data:")
-//        val rowCount = vectorSchemaRootReceived.getRowCount
-//        val idVector = vectorSchemaRootReceived.getVector("id")
-//        val nameVector = vectorSchemaRootReceived.getVector("name")
-//        for (i <- 0 until rowCount) {
-//          val id = idVector.asInstanceOf[IntVector].get(i)
-//          val nameBytes = nameVector.asInstanceOf[VarCharVector].get(i)
-//          val name = new String(nameBytes, "UTF-8")
-//          println(s"Batch $batch: Row $i: id=$id, name=$name")
-//        }
-//      }
-//    }finally {
-//      flightStream.close()
-//    }
-//    try {
       new Iterator[Seq[Row]] {
         override def hasNext: Boolean = flightStream.next()
 
         override def next(): Seq[Row] = {
+
           val vectorSchemaRootReceived = flightStream.getRoot
           val rowCount = vectorSchemaRootReceived.getRowCount
-          val idVector = vectorSchemaRootReceived.getVector("id")
-          val nameVector = vectorSchemaRootReceived.getVector("name")
+          val fieldVectors = vectorSchemaRootReceived.getFieldVectors.asScala
           Seq.range(0, rowCount).map(index => {
-            val idBytes = idVector.asInstanceOf[VarCharVector].get(index)
-            val nameBytes = nameVector.asInstanceOf[VarCharVector].get(index)
-            val name = new String(nameBytes, "UTF-8")
-            val id = new String(idBytes, "UTF-8")
-            Row(Map("id"-> id, "name" -> name))
+            val rowMap = fieldVectors.map(vec => {
+              if(vec.isNull(index)) (vec.getName, null)
+              else vec match {
+                case v: org.apache.arrow.vector.IntVector     => (vec.getName, v.get(index))
+                case v: org.apache.arrow.vector.VarCharVector => (vec.getName, new String(v.get(index)))
+                case v: org.apache.arrow.vector.Float8Vector  => (vec.getName, v.get(index))
+                case v: org.apache.arrow.vector.BitVector     => (vec.getName, v.get(index) == 1)
+                case _ => throw new UnsupportedOperationException(s"Unsupported vector type: ${vec.getClass}")
+              }
+            }).toMap
+            Row(rowMap.toSeq.map(x => x._2): _*)
           })
         }
       }.flatMap(rows => rows)
-//    }finally {
-//      flightStream.close()
-//    }
-
-
   }
 
   def close(): Unit = {

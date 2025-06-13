@@ -3,16 +3,20 @@ package org.grapheco.spark
 import org.apache.arrow.flight._
 import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
 import org.apache.arrow.vector.ipc.message.{ArrowFieldNode, ArrowRecordBatch}
-import org.apache.arrow.vector.{IntVector, VarBinaryVector, VarCharVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.types.FloatingPointPrecision
+import org.apache.arrow.vector.{BigIntVector, BitVector, Float4Vector, Float8Vector, IntVector, VarBinaryVector, VarCharVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType, IntegerType, LongType, StringType, StructType}
 
 import java.nio.charset.StandardCharsets
-import java.util.UUID
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import scala.collection.JavaConverters.{asScalaBufferConverter, seqAsJavaListConverter}
 import scala.collection.immutable.List
 import scala.jdk.CollectionConverters.asScalaIteratorConverter
+import scala.reflect.internal.util.TableDef.Column
 
 /**
  * @Author renhao
@@ -23,7 +27,10 @@ import scala.jdk.CollectionConverters.asScalaIteratorConverter
 class SparkServer(allocator: BufferAllocator, location: Location) extends NoOpFlightProducer {
 
   private val requestMap = new ConcurrentHashMap[FlightDescriptor, RemoteDataFrameImpl]()
-
+  private val spark = SparkSession.builder()
+    .appName("Spark Arrow Example")
+    .master("local[*]")
+    .getOrCreate()
   override def acceptPut(context: FlightProducer.CallContext, flightStream: FlightStream, ackStream: FlightProducer.StreamListener[PutResult]): Runnable = {
 
     new Runnable {
@@ -50,77 +57,56 @@ class SparkServer(allocator: BufferAllocator, location: Location) extends NoOpFl
   override def getStream(context: FlightProducer.CallContext, ticket: Ticket, listener: FlightProducer.ServerStreamListener): Unit = {
     val flightDescriptor = FlightDescriptor.path(new String(ticket.getBytes, StandardCharsets.UTF_8))
     val request: RemoteDataFrameImpl = requestMap.get(flightDescriptor)
-    val spark = SparkSession.builder()
-      .appName("Spark Arrow Example")
-      .master("local[*]")
-      .getOrCreate()
     val data = Seq(
-      ("1", "Alice"),
-      ("2", "Bob"),
-      ("3", "Charlie")
+      (1, """{"name":"Alice","id":"1"}""", "zhang"),
+      (2,"""{"name":"Bob","id":"1"}""", "wang"),
+      (3,"""{"name":"Charlie","id":"1"}""", "zhao")
     )
+    import spark.implicits._
     // 依据requeste信息构建DataFrame
-    val df: DataFrame = spark.createDataFrame(data).toDF("id", "name")
-    var result: DataFrame =null
+//    var df: DataFrame = spark.createDataFrame(data).toDF("id", "name", "xing")
+    //限制分区最大128mb 防止toLocalIterator拉取数据OOM .option("maxSplitBytes", 134217728)
+//    hdfs://master1:8020/test/paper_conf/part-00000
+//    person_paper/part-00000
+    var df = spark.read.csv("hdfs://10.0.82.139:8020/test/person_paper/part-00000").toDF("id","name")
+
     request.ops.foreach(opt => {
       opt match {
-        case filter@FilterOp(f) => result = df.filter(row => {
-         val b = f(row)
-         b
-        })
-        case _ =>
+        case filter@FilterOp(f) => df = df.filter(f(_))
+        case m@MapOp(f) => df = spark.createDataFrame(df.rdd.map(f(_)), df.schema)
+        case s@SelectOp(cols)=> df = df.select(cols.map(col): _*)
+        case l@LimitOp(n) => df = df.limit(n)
+        case r@ReduceOp(f) => df.reduce((r1,r2) => f((r1,r2)))
+        case _ => throw new Exception(s"${opt.toString} the Transformation is not supported")
       }
     })
 
-    //限制分区最大128mb 防止toLocalIterator拉取数据OOM
-//    val df = spark.read.option("maxSplitBytes", 134217728).csv("hdfs://10.0.82.139:8020/test/person_paper/part-00000").toDF("id","name")
-
-    val fields: Seq[Field] = List(
-      new Field("id", FieldType.nullable(new ArrowType.Utf8()), null),
-      new Field("name", FieldType.nullable(new ArrowType.Utf8()), null)
-    )
-    val schema = new Schema(fields.asJava)
-    val root = VectorSchemaRoot.create(schema, allocator)
-    val loader = new VectorLoader(root)
-    listener.start(root)
-    //每1000条row为一批进行传输,将DataFrame转化成Iterator，不会一次性加载到内存
-    result.toLocalIterator().asScala.grouped(1000).foreach(rows => {
-      loader.load(createDummyBatch(schema, rows))
-      listener.putNext()
-    })
-    listener.completed()
-  }
-  private def createDummyBatch(schema: Schema, rows: Seq[org.apache.spark.sql.Row]): ArrowRecordBatch = {
-    val vectorSchemaRoot = VectorSchemaRoot.create(schema, allocator)
-    val idVector = vectorSchemaRoot.getVector("id").asInstanceOf[VarCharVector]
-    val nameVector = vectorSchemaRoot.getVector("name").asInstanceOf[VarCharVector]
-    val rowsLen = rows.length
-    idVector.allocateNew(rowsLen)
-    nameVector.allocateNew(rowsLen)
-    for (i <- 0 until rowsLen) {
-//      println(rows(i).get(0) + rows(i).get(1).toString)
-      idVector.setSafe(i, rows(i).get(0).asInstanceOf[String].getBytes("UTF-8"))
-      val name = rows(i).get(1).asInstanceOf[String]
-      nameVector.setSafe(i, name.getBytes("UTF-8"))
+    val schema = sparkSchemaToArrowSchema(df.schema)
+    val childAllocator = allocator.newChildAllocator("flight-session", 0, Long.MaxValue)
+    val root = VectorSchemaRoot.create(schema, childAllocator)
+    try{
+      val loader = new VectorLoader(root)
+      listener.start(root)
+      //每1000条row为一批进行传输,将DataFrame转化成Iterator，不会一次性加载到内存
+      df.toLocalIterator().asScala.grouped(1000).foreach(rows => {
+        val batch = createDummyBatch(root, rows)
+        try{
+          loader.load(batch)
+          listener.putNext()
+        }finally {
+          batch.close()
+        }
+      })
+      listener.completed()
+    } catch {
+      case e: Throwable => listener.error(e)
+        throw e
+    }finally {
+      if (root != null) root.close()
+      if (childAllocator != null) childAllocator.close()
+      requestMap.remove(flightDescriptor)
     }
-    vectorSchemaRoot.setRowCount(rowsLen)
-
-    // Collect ArrowFieldNode objects (unchanged)
-    val fieldNodes = vectorSchemaRoot.getFieldVectors.asScala.map { fieldVector =>
-      new ArrowFieldNode(fieldVector.getValueCount, 0)  // 0 is the null count, adjust as needed
-    }.toList.asJava
-
-    // Collect ArrowBuf objects for each FieldVector's data
-    val buffers = vectorSchemaRoot.getFieldVectors.asScala.flatMap { fieldVector =>
-      // Get all ArrowBufs associated with the FieldVector
-      fieldVector.getBuffers(true)
-    }.toList.asJava
-
-    // Create the ArrowRecordBatch
-    new ArrowRecordBatch(vectorSchemaRoot.getRowCount, fieldNodes, buffers)
   }
-
-
 
   override def getFlightInfo(context: FlightProducer.CallContext, descriptor: FlightDescriptor): FlightInfo = {
     val flightEndpoint = new FlightEndpoint(new Ticket(descriptor.getPath.get(0).getBytes(StandardCharsets.UTF_8)), location)
@@ -132,6 +118,61 @@ class SparkServer(allocator: BufferAllocator, location: Location) extends NoOpFl
       (k, v) => listener.onNext(getFlightInfo(null, k))
     }
     listener.onCompleted()
+  }
+
+  def close(): Unit = spark.close()
+
+  private def createDummyBatch(arrowRoot: VectorSchemaRoot, rows: Seq[org.apache.spark.sql.Row]): ArrowRecordBatch = {
+    arrowRoot.allocateNew()
+    val fieldVectors = arrowRoot.getFieldVectors.asScala
+    for (i <- rows.indices) {
+      val row = rows(i)
+      for (j <- row.schema.fields.indices) {
+        val value = row.get(j)
+        val vec = fieldVectors(j)
+        // 支持基本类型处理（可扩展）
+        value match {
+          case v: Int => vec.asInstanceOf[IntVector].setSafe(i, v)
+          case v: Long => vec.asInstanceOf[BigIntVector].setSafe(i, v)
+          case v: Double => vec.asInstanceOf[Float8Vector].setSafe(i, v)
+          case v: Float => vec.asInstanceOf[Float4Vector].setSafe(i, v)
+          case v: String =>
+            val bytes = v.getBytes("UTF-8")
+            vec.asInstanceOf[VarCharVector].setSafe(i, bytes, 0, bytes.length)
+          case v: Boolean => vec.asInstanceOf[BitVector].setSafe(i, if (v) 1 else 0)
+          case null => vec.setNull(i)
+          case _ => throw new UnsupportedOperationException("Type not supported")
+        }
+      }
+    }
+    arrowRoot.setRowCount(rows.length)
+    val unloader = new VectorUnloader(arrowRoot)
+    unloader.getRecordBatch
+  }
+
+  private def sparkSchemaToArrowSchema(sparkSchema: StructType): Schema = {
+    val fields: List[Field] = sparkSchema.fields.map { field =>
+      val arrowFieldType = field.dataType match {
+        case IntegerType =>
+          new FieldType(field.nullable, new ArrowType.Int(32, true), null)
+        case LongType =>
+          new FieldType(field.nullable, new ArrowType.Int(64, true), null)
+        case FloatType =>
+          new FieldType(field.nullable, new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE), null)
+        case DoubleType =>
+          new FieldType(field.nullable, new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE), null)
+        case StringType =>
+          new FieldType(field.nullable, ArrowType.Utf8.INSTANCE, null)
+        case BooleanType =>
+          new FieldType(field.nullable, ArrowType.Bool.INSTANCE, null)
+        case _ =>
+          throw new UnsupportedOperationException(s"Unsupported type: ${field.dataType}")
+      }
+
+      new Field(field.name, arrowFieldType, Collections.emptyList())
+    }.toList
+
+    new Schema(fields.asJava)
   }
 }
 
@@ -146,6 +187,12 @@ object FlightServerApp extends App {
 
     flightServer.start()
     println(s"Server (Location): Listening on port ${flightServer.getPort}")
+    Runtime.getRuntime.addShutdownHook(new Thread() {
+      override def run(): Unit = {
+        flightServer.close()
+        producer.close()
+      }
+    })
     flightServer.awaitTermination()
   } catch {
     case e: Exception => e.printStackTrace()
@@ -158,7 +205,21 @@ object sparkTest{
       .appName("Spark Arrow Example")
       .master("local[*]")
       .getOrCreate()
-    val df = spark.read.csv("hdfs://10.0.82.139:8020/test/person_paper/part-00000").toDF("id","name")
-    df.show(10)
+    val data = Seq(
+      (1, """{"name":"Alice","id":"1"}"""),
+      (2,"""{"name":"Bob","id":"1"}"""),
+      (3,"""{"name":"Charlie","id":"1"}""")
+    )
+    // 依据requeste信息构建DataFrame
+    val df: DataFrame = spark.createDataFrame(data).toDF("id", "name")
+
+    df.groupBy("name")
+    val dff = spark.sql(
+      """
+        |
+        |""".stripMargin)
+
+
+
   }
 }
