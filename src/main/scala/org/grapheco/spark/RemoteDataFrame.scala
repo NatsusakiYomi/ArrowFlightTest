@@ -98,10 +98,12 @@ object DacpClient{
   def connect (url: String, port: Int): RemoteExecutor = new RemoteExecutor(url, port)
 
   def main(args: Array[String]): Unit = {
-    val df: RemoteDataFrameImpl = connect("0.0.0.0", 33333).open("C:\\Users\\Yomi\\PycharmProjects\\ArrowFlightTest\\src\\main\\resources\\cram")
+//    val dataPath = getClass.getResource("/cram/1.cram").getPath
+    val dataPath = "C:\\Users\\NatsusakiYomi\\Documents\\Study\\JavaProject\\ArrowFlightTest\\src\\main\\resources\\cram"
+    val df: RemoteDataFrameImpl = connect("0.0.0.0", 33333).open(dataPath)
     var num = 0
     var start=System.currentTimeMillis()
-    df.filter(row => printStr(row.get(0).toString) == "1.cram").foreach(row => {
+    df.foreach(row => {
 //      println(row)
       var endTime=System.currentTimeMillis()
       val elapsedSeconds=(endTime-start).toDouble/1000

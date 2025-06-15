@@ -1,13 +1,17 @@
-import java.io.{File, FileInputStream}
+import java.io.{DataInputStream, File, FileInputStream}
 import java.nio.file.{Files, Path, Paths}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.input.PortableDataStream
 import org.apache.spark.rdd.RDD
+
 import scala.reflect.ClassTag
 
 object SparkBinaryFileChunkReader {
 
   def main(args: Array[String]): Unit = {
+//    System.setProperty("hadoop.home.dir", "C:\\hadoop")
+//    println("Hadoop version: " + org.apache.hadoop.util.VersionInfo.getVersion)
+//    System.setProperty("java.library.path", "C:\\hadoop\\bin")
     val spark = SparkSession.builder()
       .appName("BinaryFileProcessor")
       .master("local[*]")
@@ -15,14 +19,14 @@ object SparkBinaryFileChunkReader {
       .getOrCreate()
 
     try {
-      val filePath = "C:\\Users\\Yomi\\PycharmProjects\\ArrowFlightTest\\src\\main\\resources\\cram\\1.cram"
+      val filePath = "C:\\Users\\NatsusakiYomi\\Documents\\Study\\JavaProject\\ArrowFlightTest\\src\\main\\resources\\cram"
       val chunkSize = 128 * 1024 * 1024 // 128MB
 
       // 阶段1: 使用Spark读取文件
-      val fileData = readFileWithSpark(spark, filePath)
+      val fileStreams = readFileWithSpark(spark, filePath)
 
       // 阶段2: 串行处理每个分块
-      processFileChunks(spark, filePath, chunkSize, fileData)
+      processFileChunks(spark, filePath, chunkSize, fileStreams)
     } finally {
       spark.stop()
     }
@@ -34,7 +38,7 @@ object SparkBinaryFileChunkReader {
   private def readFileWithSpark(
                                  spark: SparkSession,
                                  filePath: String
-                               ): PortableDataStream = {
+                               ): Array[PortableDataStream] = {
     println("第一阶段: 使用Spark读取文件元数据")
 
     // 检查文件是否存在
@@ -48,14 +52,14 @@ object SparkBinaryFileChunkReader {
     val rdd: RDD[(String, PortableDataStream)] = spark.sparkContext.binaryFiles(filePath)
 
     // 由于只有一个文件，我们可以安全获取第一条记录
-    val fileStream = rdd.first()._2
-
+    val fileStreams: Array[PortableDataStream] = rdd.map(_._2).collect()
+//    println(fileStreams.length)
 //    val fileSize = fileStream.size
     println(s"Spark加载文件完成")
     println(s"  - 文件名称: ${path.getFileName}")
 //    println(f"  - 文件大小: ${fileSize / (1024.0 * 1024)}%.2f MB")
 
-    fileStream
+    fileStreams
   }
 
   /**
@@ -65,14 +69,14 @@ object SparkBinaryFileChunkReader {
                                  spark: SparkSession,
                                  filePath: String,
                                  chunkSize: Int,
-                                 fileStream: PortableDataStream
+                                 fileStreams: Array[PortableDataStream]
                                ): Unit = {
     println("\n第二阶段: 在Driver端串行处理文件分块")
 
     // 关闭Spark的隐式转换
     import spark.implicits._
 
-    val file = new File(filePath)
+    val file = new File(filePath+"//1.cram")
     val fileSize = file.length()
     val totalChunks = Math.ceil(fileSize.toDouble / chunkSize).toInt
 
@@ -82,39 +86,47 @@ object SparkBinaryFileChunkReader {
     println(s"  - 方法: 在Driver端串行处理\n")
 
     val startTime = System.nanoTime()
-    val inputStream = fileStream.open()
-    var currentPosition: Long = 0
-    try {
-      for (chunkIndex <- 0 until totalChunks) {
-        val currentChunkSize = Math.min(chunkSize, fileSize - currentPosition).toInt
-        val chunkBuffer = new Array[Byte](currentChunkSize)
-        println(s"处理分块 #${chunkIndex + 1}/$totalChunks:")
-        println(f"  - 起始位置: ${currentPosition / (1024.0 * 1024)}%.2f MB")
-        println(f"  - 分块大小: ${currentChunkSize / (1024.0 * 1024)}%.2f MB")
-        // 从当前位置读取整个分块
-        inputStream.readFully(chunkBuffer)
-        currentPosition += currentChunkSize
+    fileStreams.foreach { pds =>
+      try {
+        val inputStream: DataInputStream = pds.open()    // 此时才加载单个文件内容
+        // 处理逻辑 (如读取/解析等)
 
-        // 处理当前分块
-//        processChunk(chunkBuffer, chunkIndex, chunkStart, currentChunkSize)
+        var currentPosition: Long = 0
+        try {
+          for (chunkIndex <- 0 until totalChunks) {
+            val currentChunkSize = Math.min(chunkSize, fileSize - currentPosition).toInt
+            val chunkBuffer = new Array[Byte](currentChunkSize)
+            println(s"处理分块 #${chunkIndex + 1}/$totalChunks:")
+            println(f"  - 起始位置: ${currentPosition / (1024.0 * 1024)}%.2f MB")
+            println(f"  - 分块大小: ${currentChunkSize / (1024.0 * 1024)}%.2f MB")
+            // 从当前位置读取整个分块
+            inputStream.readFully(chunkBuffer)
+            currentPosition += currentChunkSize
 
-        // 显示进度信息
-        val progress = (chunkIndex + 1) * 100.0 / totalChunks
-        val elapsedMillis = (System.nanoTime() - startTime) / 1e6
-//        val speed = if (elapsedMillis > 0) {
-//          val mbProcessed = (chunkStart + currentChunkSize) / (1024.0 * 1024)
-//          f"${mbProcessed / (elapsedMillis / 1000)}%.2f MB/s"
-//        } else "N/A"
+            // 处理当前分块
+            //        processChunk(chunkBuffer, chunkIndex, chunkStart, currentChunkSize)
+            processChunk(chunkBuffer,chunkIndex,0,currentChunkSize)
+            // 显示进度信息
+            val progress = (chunkIndex + 1) * 100.0 / totalChunks
+            val elapsedMillis = (System.nanoTime() - startTime) / 1e6
+            //        val speed = if (elapsedMillis > 0) {
+            //          val mbProcessed = (chunkStart + currentChunkSize) / (1024.0 * 1024)
+            //          f"${mbProcessed / (elapsedMillis / 1000)}%.2f MB/s"
+            //        } else "N/A"
 
-        println(f"  - 进度: ${progress}%.1f%%")
-//        println(s"  - 处理速度: $speed")
-        println("---------------------------------")
+            println(f"  - 进度: ${progress}%.1f%%")
+            //        println(s"  - 处理速度: $speed")
+            println("---------------------------------")
+          }
+
+
+          println("\n所有分块处理完成!")
+        } finally {
+          inputStream.close()        // 确保资源释放
+        }
       }
+      val inputStream = fileStreams(0).open()
 
-      // 关闭流
-      //    fileStream.close()
-
-      println("\n所有分块处理完成!")
     }
   }
 
